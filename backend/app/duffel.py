@@ -1,22 +1,10 @@
 """
-duffel.py — Duffel API adapter with local mock fallback.
-
-If DUFFEL_API_KEY is set in the environment, every flight search and booking
-goes through the real Duffel sandbox API.  If the env var is absent (or empty),
-the adapter falls back to the locally-seeded Flight rows so the app always
-works without an external dependency.
-
 Duffel REST flow:
   1. POST /air/offer_requests  → offer_request_id
   2. GET  /air/offers?offer_request_id=<id>  → list[offer]
   3. POST /air/orders          → order  (confirmed booking)
   4. GET  /air/orders/<id>     → retrieve existing order
   5. POST /air/orders/<id>/actions/void  → cancel / void
-
-All amounts from Duffel are in minor currency units (pence/öre); we convert
-to SEK by using the offer's total_amount and total_currency fields and doing
-a simple pass-through (Duffel sandbox uses GBP; we show the value with the
-currency label as returned).
 """
 
 import os
@@ -45,9 +33,6 @@ def _duffel_offer_to_flight_dict(offer: Dict[str, Any]) -> Dict[str, Any]:
     """
     Map a single Duffel offer object to the dict shape our FlightResponse
     schema expects, so the rest of the app doesn't care which adapter is active.
-
-    Duffel gives amounts as strings like "120.50" in the offer currency.
-    We store them as-is in price_sek (and also store the currency for the UI).
     """
     slices = offer.get("slices", [])
     if not slices:
