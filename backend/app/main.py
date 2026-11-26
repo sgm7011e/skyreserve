@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from app.database import engine, Base, get_db
 from app.models import Flight, Booking
@@ -25,7 +25,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="SkyReserve API",
-    description="Direct European Flight Booking Platform - LTU M7011E Group 8",
+    description="Direct European Flight Booking Platform - M7011E Group 8",
     version="1.0.0"
 )
 
@@ -39,8 +39,27 @@ app.add_middleware(
 )
 
 
+def _ensure_booking_schema():
+    """Idempotent Postgres schema migration for live Duffel booking columns."""
+    if engine.name != "postgresql":
+        return
+    statements = [
+        "ALTER TABLE bookings ALTER COLUMN flight_id DROP NOT NULL;",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flight_number VARCHAR(20);",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS origin VARCHAR(3);",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS destination VARCHAR(3);",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS departure_time TIMESTAMP;",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duffel_offer_id VARCHAR(100);",
+        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duffel_order_id VARCHAR(100);",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+
+
 @app.on_event("startup")
 def startup_event():
+    _ensure_booking_schema()
     db = next(get_db())
     seed_database(db)
 
@@ -104,15 +123,20 @@ def get_flight_details(flight_id: str, db: Session = Depends(get_db)):
     Fetch flight details + occupied seat map for visual seat selection.
 
     In mock mode: flight_id is an integer PK from the Flight table.
-    In live mode: flight_id is a Duffel offer ID string — we still need the
-    seat map from local bookings (Duffel doesn't expose per-seat maps in
-    sandbox), so we return a synthetic record with all seats available.
+    In live mode: flight_id is a Duffel offer ID string — booked seats are
+    checked against local Booking rows sharing the same duffel_offer_id.
     """
-    if duffel_adapter.is_live:
-        # flight_id is a Duffel offer ID; return a minimal synthetic detail object
-        # We can't do real seat maps from Duffel, so show all seats as available
+    if flight_id.startswith("off_") or (duffel_adapter.is_live and not flight_id.isdigit()):
+        booked_seats = [
+            b.seat_number
+            for b in db.query(Booking).filter(
+                Booking.duffel_offer_id == flight_id,
+                Booking.status == "CONFIRMED",
+            ).all()
+        ]
         return FlightDetailResponse(
-            id=0,
+            id=flight_id,
+            duffel_offer_id=flight_id,
             flight_number="",
             origin="",
             origin_city="",
@@ -122,20 +146,20 @@ def get_flight_details(flight_id: str, db: Session = Depends(get_db)):
             arrival_time=datetime.utcnow(),
             price_sek=0.0,
             total_seats=40,
-            available_seats=40,
-            booked_seats=[],
+            available_seats=max(0, 40 - len(booked_seats)),
+            booked_seats=booked_seats,
             all_seats=ALL_SEATS,
         )
-    else:
-        # Mock mode: look up local Flight row
-        try:
-            fid = int(flight_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid flight ID")
 
-        flight = db.query(Flight).filter(Flight.id == fid).first()
-        if not flight:
-            raise HTTPException(status_code=404, detail="Flight not found")
+    # Mock mode: look up local Flight row
+    try:
+        fid = int(flight_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid flight ID")
+
+    flight = db.query(Flight).filter(Flight.id == fid).first()
+    if not flight:
+        raise HTTPException(status_code=404, detail="Flight not found")
 
     booked_seats = [
         b.seat_number for b in flight.bookings
@@ -172,7 +196,8 @@ def create_booking(
     """
     ACID Atomic Seat Reservation with Saga compensation:
 
-    1. Validate seat and acquire row lock on the Flight row (PostgreSQL FOR UPDATE).
+    1. Validate seat and check availability (local Flight row lock in mock mode,
+       or duffel_offer_id seat check in live Duffel mode).
     2. Create a local Booking record with status=CONFIRMED.
     3. If Duffel live mode: call Duffel to create an order.
        - Success: store duffel_order_id in the booking record.
@@ -183,14 +208,27 @@ def create_booking(
     if seat not in ALL_SEATS:
         raise HTTPException(status_code=400, detail=f"Invalid seat number: {seat}")
 
-    # In live Duffel mode, flight_id is a Duffel offer ID string, not a local PK.
-    # We still create a local Booking row but link it to a placeholder local flight
-    # (flight_id=0 convention) so our booking history always works.
-    local_flight_id = payload.flight_id
-    flight = None
+    raw_flight_id = str(payload.flight_id).strip()
+    is_duffel_offer = bool(payload.duffel_offer_id) or not raw_flight_id.isdigit()
 
-    if not duffel_adapter.is_live:
-        # Mock mode: enforce availability from the local Flight table
+    local_flight_id: Optional[int] = None
+    offer_id: Optional[str] = None
+    flight: Optional[Flight] = None
+
+    if is_duffel_offer:
+        offer_id = (payload.duffel_offer_id or raw_flight_id).strip()
+        existing_seat_booking = db.query(Booking).filter(
+            Booking.duffel_offer_id == offer_id,
+            Booking.seat_number == seat,
+            Booking.status == "CONFIRMED"
+        ).first()
+        if existing_seat_booking:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Seat {seat} has already been reserved by another passenger."
+            )
+    else:
+        local_flight_id = int(raw_flight_id)
         flight_query = db.query(Flight).filter(Flight.id == local_flight_id)
         if engine.name == "postgresql":
             flight = flight_query.with_for_update().first()
@@ -218,6 +256,18 @@ def create_booking(
     # Generate unique booking reference
     booking_ref = f"BK-{uuid.uuid4().hex[:6].upper()}"
 
+    if flight:
+        resp_flight_number = flight.flight_number
+        resp_origin = flight.origin
+        resp_destination = flight.destination
+        resp_departure = flight.departure_time
+    else:
+        resp_flight_number = (payload.flight_number or booking_ref)[:20]
+        resp_origin = (payload.origin or "")[:3].upper()
+        resp_destination = (payload.destination or "")[:3].upper()
+        dep_val = payload.departure_time or datetime.utcnow()
+        resp_departure = dep_val.replace(tzinfo=None) if dep_val.tzinfo else dep_val
+
     booking = Booking(
         booking_ref=booking_ref,
         flight_id=local_flight_id,
@@ -226,7 +276,11 @@ def create_booking(
         passenger_email=str(payload.passenger_email),
         seat_number=seat,
         status="CONFIRMED",
-        duffel_offer_id=payload.duffel_offer_id,
+        flight_number=resp_flight_number,
+        origin=resp_origin,
+        destination=resp_destination,
+        departure_time=resp_departure,
+        duffel_offer_id=offer_id,
         duffel_order_id=None,
     )
 
@@ -238,9 +292,9 @@ def create_booking(
     db.refresh(booking)
 
     # --- Saga step: attempt Duffel order creation ---
-    if duffel_adapter.is_live and payload.duffel_offer_id:
+    if duffel_adapter.is_live and offer_id:
         order_id = duffel_adapter.create_order(
-            offer_id=payload.duffel_offer_id,
+            offer_id=offer_id,
             passenger_name=payload.passenger_name,
             passenger_email=str(payload.passenger_email),
         )
@@ -259,22 +313,10 @@ def create_booking(
                 detail="Flight reservation could not be confirmed with the airline. Please try again."
             )
 
-    # Build response — handle both live (no local flight) and mock modes
-    if flight:
-        resp_flight_number = flight.flight_number
-        resp_origin = flight.origin
-        resp_destination = flight.destination
-        resp_departure = flight.departure_time
-    else:
-        resp_flight_number = booking_ref  # placeholder in live mode
-        resp_origin = ""
-        resp_destination = ""
-        resp_departure = datetime.utcnow()
-
     return BookingResponse(
         id=booking.id,
         booking_ref=booking.booking_ref,
-        flight_id=local_flight_id,
+        flight_id=booking.flight_id,
         flight_number=resp_flight_number,
         origin=resp_origin,
         destination=resp_destination,
@@ -301,16 +343,16 @@ def get_my_bookings(
 
     results = []
     for b in bookings:
-        try:
+        if b.flight is not None:
             fn = b.flight.flight_number
             orig = b.flight.origin
             dest = b.flight.destination
-            dep  = b.flight.departure_time
-        except Exception:
-            fn = b.booking_ref
-            orig = ""
-            dest = ""
-            dep  = b.created_at
+            dep = b.flight.departure_time
+        else:
+            fn = b.flight_number or b.booking_ref
+            orig = b.origin or ""
+            dest = b.destination or ""
+            dep = b.departure_time or b.created_at
 
         results.append(BookingResponse(
             id=b.id,
@@ -357,15 +399,13 @@ def cancel_booking(
             # Log but don't block the local cancellation — idempotency is fine
             import logging
             logging.getLogger(__name__).warning(
-                "Duffel void failed for order %s — local record still cancelled.",
+                "Duffel cancellation failed for order %s — local record still cancelled.",
                 booking.duffel_order_id
             )
 
     booking.status = "CANCELLED"
-    try:
+    if booking.flight is not None:
         booking.flight.available_seats += 1
-    except Exception:
-        pass  # live mode: no local flight row
     db.commit()
 
     return MessageResponse(message="Booking cancelled successfully. Seat restored.", status="CANCELLED")

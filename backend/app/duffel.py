@@ -81,12 +81,14 @@ def _duffel_offer_to_flight_dict(offer: Dict[str, Any]) -> Dict[str, Any]:
 
     total_amount   = float(offer.get("total_amount", 0))
     total_currency = offer.get("total_currency", "GBP")
+    fx_to_sek = {"SEK": 1.0, "GBP": 13.4, "EUR": 11.5, "USD": 10.8}.get(total_currency, 13.4)
 
     # Available seats: Duffel provides this per-slice, default to remaining count
     avail = offer.get("available_seats") or slices[0].get("fare_brand_name") or 40
 
     return {
         "id": offer["id"],           # Duffel offer ID used as the "flight id" in live mode
+        "duffel_offer_id": offer["id"],
         "flight_number": flight_number,
         "origin": origin_iata,
         "origin_city": origin_city,
@@ -94,11 +96,10 @@ def _duffel_offer_to_flight_dict(offer: Dict[str, Any]) -> Dict[str, Any]:
         "destination_city": dest_city,
         "departure_time": dep_dt,
         "arrival_time": arr_dt,
-        "price_sek": round(total_amount * 13.4, 2), # GBP -> SEK conversion, fixed rate of 13.4
+        "price_sek": round(total_amount * fx_to_sek, 2),
         "total_seats": 40,
         "available_seats": 40,
-        # Extra fields carried for display / booking; not in FlightResponse schema
-        # but stored in the dict for reference
+        # Extra fields carried for internal reference
         "_currency": total_currency,
         "_duffel_offer_id": offer["id"],
         "_passengers": offer.get("passengers", []),
@@ -151,13 +152,18 @@ class DuffelAdapter:
             return self._mock_search(origin, destination, date, db)
 
     def _live_search(self, origin: str, destination: str, date: str, passengers: int) -> List[Dict[str, Any]]:
+        if not origin.strip() or not destination.strip():
+            return []
+
+        departure_date = date.strip() or datetime.utcnow().strftime("%Y-%m-%d")
+
         body = {
             "data": {
                 "slices": [
                     {
-                        "origin": origin.upper(),
-                        "destination": destination.upper(),
-                        "departure_date": date,
+                        "origin": origin.strip().upper(),
+                        "destination": destination.strip().upper(),
+                        "departure_date": departure_date,
                     }
                 ],
                 "passengers": [{"type": "adult"} for _ in range(passengers)],
@@ -243,8 +249,24 @@ class DuffelAdapter:
         return results
 
     # ------------------------------------------------------------------
-    # Order creation (booking)
+    # Offer lookup & Order creation (booking)
     # ------------------------------------------------------------------
+
+    def get_offer(self, offer_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a raw Duffel offer by ID, or None if unavailable."""
+        if not self.is_live or not offer_id:
+            return None
+        try:
+            with httpx.Client(timeout=30) as client:
+                r = client.get(
+                    f"{DUFFEL_BASE}/air/offers/{offer_id}",
+                    headers=_headers(self.token),
+                )
+                r.raise_for_status()
+                return r.json().get("data")
+        except Exception as exc:
+            logger.error("Duffel get_offer failed for %s: %s", offer_id, exc)
+            return None
 
     def create_order(
         self,
@@ -272,7 +294,7 @@ class DuffelAdapter:
         given_name  = parts[0] if parts else "Passenger"
         family_name = parts[1] if len(parts) > 1 else "Guest"
 
-        # First, fetch the offer to get the passenger IDs Duffel assigned
+        # First, fetch the offer to get passenger IDs and exact payment amount/currency
         try:
             with httpx.Client(timeout=30) as client:
                 r_offer = client.get(
@@ -302,6 +324,13 @@ class DuffelAdapter:
                         "type": "instant",
                         "selected_offers": [offer_id],
                         "passengers": passengers_body,
+                        "payments": [
+                            {
+                                "type": "balance",
+                                "amount": str(offer_data["total_amount"]),
+                                "currency": offer_data["total_currency"],
+                            }
+                        ],
                     }
                 }
 
@@ -328,27 +357,35 @@ class DuffelAdapter:
 
     def cancel_order(self, order_id: str) -> bool:
         """
-        Void/cancel a Duffel order.  Returns True on success.
-        In mock mode, always returns True (nothing to cancel externally).
+        Cancel a Duffel order via the two-step Order Cancellations API.
+        Returns True on success; in mock mode always returns True.
         """
         if not self.is_live or not order_id:
             return True
 
         try:
             with httpx.Client(timeout=30) as client:
-                r = client.post(
-                    f"{DUFFEL_BASE}/air/orders/{order_id}/actions/void",
+                r_quote = client.post(
+                    f"{DUFFEL_BASE}/air/order_cancellations",
+                    json={"data": {"order_id": order_id}},
+                    headers=_headers(self.token),
+                )
+                r_quote.raise_for_status()
+                cancellation_id = r_quote.json()["data"]["id"]
+
+                r_confirm = client.post(
+                    f"{DUFFEL_BASE}/air/order_cancellations/{cancellation_id}/actions/confirm",
                     headers=_headers(self.token),
                     content=b"{}",
                 )
-                r.raise_for_status()
-                logger.info("Duffel order voided: %s", order_id)
+                r_confirm.raise_for_status()
+                logger.info("Duffel order cancelled: %s (cancellation %s)", order_id, cancellation_id)
                 return True
         except httpx.HTTPStatusError as exc:
-            logger.error("Duffel void failed: %s — %s", exc.response.status_code, exc.response.text)
+            logger.error("Duffel cancellation failed: %s — %s", exc.response.status_code, exc.response.text)
             return False
         except Exception as exc:
-            logger.error("Duffel void failed: %s", exc)
+            logger.error("Duffel cancellation failed: %s", exc)
             return False
 
 

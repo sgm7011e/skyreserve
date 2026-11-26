@@ -27,13 +27,19 @@ class Booking(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     booking_ref = Column(String(12), unique=True, index=True, nullable=False)
-    flight_id = Column(Integer, ForeignKey("flights.id"), nullable=False)
+    flight_id = Column(Integer, ForeignKey("flights.id"), nullable=True)  # null for live Duffel bookings
     user_id = Column(String(64), index=True, nullable=False)
     passenger_name = Column(String(100), nullable=False)
     passenger_email = Column(String(100), nullable=False)
     seat_number = Column(String(5), nullable=False)
     status = Column(String(20), default="CONFIRMED", nullable=False)   # CONFIRMED, CANCELLED, FAILED
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Snapshot route details for live Duffel bookings (no local Flight row)
+    flight_number = Column(String(20), nullable=True)
+    origin = Column(String(3), nullable=True)
+    destination = Column(String(3), nullable=True)
+    departure_time = Column(DateTime, nullable=True)
 
     # Duffel correlation IDs — null when running in mock/fallback mode
     duffel_offer_id = Column(String(100), nullable=True)   # from Duffel search result

@@ -107,14 +107,19 @@ export default function App() {
     }
 
     try {
+      const duffelOfferId = selectedFlight.duffel_offer_id
+        || (typeof selectedFlight.id === 'string' ? selectedFlight.id : null);
+
       const body = {
         flight_id: selectedFlight.id,
         passenger_name: passengerName,
         passenger_email: passengerEmail,
         seat_number: selectedSeat,
-        // duffel_offer_id is set when in live Duffel mode (the flight id IS the offer id);
-        // null/undefined in mock mode — backend handles both.
-        duffel_offer_id: selectedFlight._duffel_offer_id || null,
+        duffel_offer_id: duffelOfferId,
+        flight_number: selectedFlight.flight_number,
+        origin: selectedFlight.origin,
+        destination: selectedFlight.destination,
+        departure_time: selectedFlight.departure_time,
       };
 
       const res = await fetch('/api/bookings', {
@@ -134,7 +139,10 @@ export default function App() {
       }
 
       if (!res.ok) {
-        throw new Error(data.detail || 'Booking failed');
+        const errMsg = Array.isArray(data.detail)
+          ? data.detail.map(err => `${err.loc?.slice(-1)[0] || 'field'}: ${err.msg}`).join(', ')
+          : (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || 'Booking failed'));
+        throw new Error(errMsg);
       }
 
       showToast(`🎉 Confirmed! Ref: ${data.booking_ref} (Seat ${data.seat_number})`, 'success');
@@ -181,11 +189,8 @@ export default function App() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Currency label: use _currency if present (Duffel live), else SEK
-  const priceLabel = (flight) => {
-    const currency = flight._currency || 'SEK';
-    return `${flight.price_sek} ${currency}`;
-  };
+  // price_sek is always normalized to SEK by the backend adapter
+  const priceLabel = (flight) => `${flight.price_sek} SEK`;
 
   return (
     <div>
@@ -223,7 +228,7 @@ export default function App() {
       {/* Hero Banner */}
       <section className="hero-banner">
         <h1>Direct European Flight Booking</h1>
-        <p>Book your direct flights easily and efficiently.</p>
+        <p>We don't do return trips yet!</p>
       </section>
 
       {/* Search Filter Card */}
@@ -279,9 +284,6 @@ export default function App() {
       <main className="main-container">
         <div className="results-header">
           <h2>Available Direct Flights ({flights.length})</h2>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            Group 8 K3s Cluster • Domain: group-8-m7011e-ltu.se
-          </span>
         </div>
 
         {loading ? (
@@ -441,7 +443,7 @@ export default function App() {
                 style={{ width: '100%', height: '48px', fontSize: '1rem' }}
                 disabled={!selectedSeat}
               >
-                Confirm Reservation (Atomic ACID Lock)
+                Confirm Reservation
               </button>
             </form>
           </div>
@@ -465,7 +467,7 @@ export default function App() {
                   <div key={b.id} className="booking-ticket" style={{ opacity: b.status === 'CANCELLED' ? 0.6 : 1 }}>
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontWeight: 800, fontSize: '1.05rem', color: '#1e3a8a' }}>{b.booking_ref}</span>
+                        <span style={{ fontWeight: 800, fontSize: '1.05rem', color: '#1e3a8a' }}>Booking Reference: {b.booking_ref}</span>
                         <span style={{
                           fontSize: '0.7rem',
                           fontWeight: 700,
@@ -478,7 +480,7 @@ export default function App() {
                         </span>
                       </div>
                       <div style={{ fontSize: '0.9rem', fontWeight: 600, marginTop: '0.25rem' }}>
-                        {b.flight_number}: {b.origin} → {b.destination}
+                        Flight No. {b.flight_number}: {b.origin} → {b.destination}
                       </div>
                       <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
                         Seat: <strong style={{ color: '#0f172a' }}>{b.seat_number}</strong> • Passenger: {b.passenger_name}

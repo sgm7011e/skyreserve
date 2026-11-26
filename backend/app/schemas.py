@@ -16,6 +16,7 @@ class FlightBase(BaseModel):
 
 class FlightResponse(FlightBase):
     id: int | str
+    duffel_offer_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -25,16 +26,20 @@ class FlightDetailResponse(FlightResponse):
     all_seats: List[str] = []
 
 class BookingCreateRequest(BaseModel):
-    flight_id: int
+    flight_id: int | str
     passenger_name: str
     passenger_email: str
     seat_number: str
     duffel_offer_id: Optional[str] = None   # supplied by frontend when in live Duffel mode
+    flight_number: Optional[str] = None
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    departure_time: Optional[datetime] = None
 
 class BookingResponse(BaseModel):
     id: int
     booking_ref: str
-    flight_id: int
+    flight_id: Optional[int] = None
     flight_number: str
     origin: str
     destination: str
