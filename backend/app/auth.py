@@ -16,7 +16,7 @@ DISABLE_AUTH = os.getenv("DISABLE_AUTH", "true").lower() in ("true", "1", "yes")
 DEFAULT_MOCK_USER = UserProfile(
     user_id="user-darren-001",
     name="Darren Chai",
-    email="darren@group8.se",
+    email="darren@gmail.com",
     role="passenger"
 )
 
