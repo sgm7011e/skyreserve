@@ -10,33 +10,14 @@ ROUTES = [
     # Swedish & Nordic connections
     ("LLA", "Luleå Kallax", "ARN", "Stockholm Arlanda", 75, 895.0),
     ("ARN", "Stockholm Arlanda", "LLA", "Luleå Kallax", 75, 920.0),
-    
-    # Major Pan-European direct routes
-    ("ARN", "Stockholm Arlanda", "LHR", "London Heathrow", 155, 1450.0),
-    ("LHR", "London Heathrow", "ARN", "Stockholm Arlanda", 155, 1490.0),
-    ("ARN", "Stockholm Arlanda", "CDG", "Paris Charles de Gaulle", 160, 1550.0),
-    ("CDG", "Paris Charles de Gaulle", "ARN", "Stockholm Arlanda", 160, 1520.0),
-    ("ARN", "Stockholm Arlanda", "BER", "Berlin Brandenburg", 100, 1150.0),
-    ("BER", "Berlin Brandenburg", "ARN", "Stockholm Arlanda", 100, 1180.0),
-    ("ARN", "Stockholm Arlanda", "AMS", "Amsterdam Schiphol", 125, 1290.0),
-    ("AMS", "Amsterdam Schiphol", "ARN", "Stockholm Arlanda", 125, 1280.0),
-    
-    ("LHR", "London Heathrow", "CDG", "Paris Charles de Gaulle", 80, 950.0),
-    ("CDG", "Paris Charles de Gaulle", "LHR", "London Heathrow", 80, 950.0),
-    ("BER", "Berlin Brandenburg", "BCN", "Barcelona El Prat", 150, 1350.0),
-    ("BCN", "Barcelona El Prat", "BER", "Berlin Brandenburg", 150, 1380.0),
-    ("CDG", "Paris Charles de Gaulle", "FCO", "Rome Fiumicino", 125, 1220.0),
-    ("FCO", "Rome Fiumicino", "CDG", "Paris Charles de Gaulle", 125, 1250.0),
-    ("AMS", "Amsterdam Schiphol", "BCN", "Barcelona El Prat", 135, 1390.0),
-    ("BCN", "Barcelona El Prat", "AMS", "Amsterdam Schiphol", 135, 1410.0),
 ]
 
 FLIGHT_TIMES = [
-    (7, 0, "SK101"),
-    (9, 45, "SK103"),
-    (13, 15, "SK105"),
-    (17, 30, "SK107"),
-    (20, 15, "SK109")
+    (7, 0),
+    (9, 45),
+    (13, 15),
+    (17, 30),
+    (20, 15)
 ]
 
 def seed_database(db: Session, force: bool = False):
@@ -57,11 +38,11 @@ def seed_database(db: Session, force: bool = False):
         current_day = base_date + timedelta(days=day_offset)
 
         for origin, o_city, dest, d_city, duration_min, price in ROUTES:
-            for dep_hour, dep_min, base_code in FLIGHT_TIMES[:2]: # 2 flights per route per day
+            for dep_hour, dep_min in FLIGHT_TIMES:
                 flight_seq += 1
                 dep_time = current_day.replace(hour=dep_hour, minute=dep_min)
                 arr_time = dep_time + timedelta(minutes=duration_min)
-                flight_num = f"{base_code[:2]}{flight_seq}"
+                flight_num = f"SK{flight_seq}"
 
                 flight = Flight(
                     flight_number=flight_num,
@@ -75,7 +56,7 @@ def seed_database(db: Session, force: bool = False):
                     total_seats=40,
                     available_seats=40
                 )
-                db.add(flight)
+                db.add(flight)  
 
     db.commit()
 
@@ -85,18 +66,18 @@ def seed_database(db: Session, force: bool = False):
         demo_booking1 = Booking(
             booking_ref="BK-DEMO-01",
             flight_id=first_flight.id,
-            user_id="user-chew-002",
-            passenger_name="Chew Yun",
-            passenger_email="chewyun@group8.se",
+            user_id="user-darren-001",
+            passenger_name="Darren Chai",
+            passenger_email="darren@gmail.com",
             seat_number="1A",
             status="CONFIRMED"
         )
         demo_booking2 = Booking(
             booking_ref="BK-DEMO-02",
             flight_id=first_flight.id,
-            user_id="user-xena-003",
+            user_id="user-xena-002",
             passenger_name="Xena Lim",
-            passenger_email="xena@group8.se",
+            passenger_email="xena@gmail.com",
             seat_number="1B",
             status="CONFIRMED"
         )
