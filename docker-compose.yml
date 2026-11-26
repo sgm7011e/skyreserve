@@ -31,7 +31,7 @@ services:
       DISABLE_AUTH: "true"
       KEYCLOAK_REALM: "skyreserve"
       TZ: Europe/Stockholm
-      DUFFEL_API_KEY: ${DUFFEL_API_KEY}
+      DUFFEL_API_KEY: ${DUFFEL_API_KEY} # in .env, confidential info so shouldnt be here
     ports:
       - "8000:8000"
     networks:
