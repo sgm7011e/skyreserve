@@ -1,0 +1,152 @@
+{
+  "realm": "skyreserve",
+  "enabled": true,
+  "displayName": "SkyReserve",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "sslRequired": "none",
+  "defaultRoles": [
+    "passenger"
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "passenger",
+        "description": "Standard SkyReserve passenger"
+      },
+      {
+        "name": "admin",
+        "description": "SkyReserve administrator"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "darren",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Darren",
+      "lastName": "Chai",
+      "email": "darren@group8.se",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "darren123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "passenger"
+      ]
+    },
+    {
+      "username": "chewyun",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Chew Yun",
+      "lastName": "Tay",
+      "email": "chewyun@group8.se",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "chewyun123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "passenger"
+      ]
+    },
+    {
+      "username": "xena",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Xena",
+      "lastName": "Lim",
+      "email": "xena@group8.se",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "xena123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "passenger"
+      ]
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Group 8",
+      "lastName": "Admin",
+      "email": "admin@group8.se",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin",
+        "passenger"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "skyreserve-frontend",
+      "name": "SkyReserve Frontend",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "rootUrl": "http://localhost:8080",
+      "baseUrl": "http://localhost:8080",
+      "redirectUris": [
+        "http://localhost:8080/*",
+        "http://127.0.0.1:8080/*",
+        "https://group-8-m7011e-ltu.se/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "https://group-8-m7011e-ltu.se",
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "skyreserve-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "skyreserve-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

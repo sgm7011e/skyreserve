@@ -1,4 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import Keycloak from 'keycloak-js';
+import { keycloakConfig } from './keycloak-config';
+
+// Singleton Keycloak instance outside component to survive React StrictMode re-renders
+let keycloakInstance = null;
+let keycloakInitPromise = null;
+
+const getKeycloak = () => {
+  if (!keycloakInstance) {
+    keycloakInstance = new Keycloak(keycloakConfig);
+  }
+  return keycloakInstance;
+};
+
+const getAccessToken = async () => {
+  const kc = getKeycloak();
+  await kc.updateToken(30);
+  return kc.token;
+};
+
+const authFetch = async (url, options = {}) => {
+  const token = await getAccessToken();
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+};
 
 // Known airports shown as datalist suggestions; user can also type any IATA code
 const AIRPORTS = [
@@ -13,6 +43,10 @@ const AIRPORTS = [
 ];
 
 export default function App() {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
+
   const [flights, setFlights] = useState([]);
   const [searchOrigin, setSearchOrigin] = useState('');
   const [searchDest, setSearchDest] = useState('');
@@ -22,12 +56,12 @@ export default function App() {
   const [selectedFlight, setSelectedFlight] = useState(null);
   const [flightDetails, setFlightDetails] = useState(null);
   const [selectedSeat, setSelectedSeat] = useState('');
-  const [passengerName, setPassengerName] = useState('Darren Chai');
-  const [passengerEmail, setPassengerEmail] = useState('example@email.com');
+  const [passengerName, setPassengerName] = useState('');
+  const [passengerEmail, setPassengerEmail] = useState('');
 
   const [myBookings, setMyBookings] = useState([]);
   const [showMyBookings, setShowMyBookings] = useState(false);
-  const [currentUser, setCurrentUser] = useState({ name: 'Darren Chai', role: 'passenger' });
+  const [currentUser, setCurrentUser] = useState({ name: 'Passenger', email: '', role: 'passenger' });
   const [toast, setToast] = useState(null);
 
   const showToast = (message, type = 'success') => {
@@ -36,7 +70,7 @@ export default function App() {
   };
 
   // Fetch flights
-  const loadFlights = async () => {
+  const loadFlights = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -44,7 +78,7 @@ export default function App() {
       if (searchDest) params.append('destination', searchDest.toUpperCase().trim());
       if (searchDate) params.append('date', searchDate);
 
-      const res = await fetch(`/api/flights?${params.toString()}`);
+      const res = await authFetch(`/api/flights?${params.toString()}`);
       if (!res.ok) throw new Error('Failed to fetch flights');
       const data = await res.json();
       setFlights(data);
@@ -53,12 +87,12 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchOrigin, searchDest, searchDate]);
 
-  // Fetch bookings for current user
-  const loadMyBookings = async () => {
+  // Fetch bookings for authenticated user
+  const loadMyBookings = useCallback(async () => {
     try {
-      const res = await fetch('/api/bookings/my');
+      const res = await authFetch('/api/bookings/my');
       if (res.ok) {
         const data = await res.json();
         setMyBookings(data);
@@ -66,22 +100,60 @@ export default function App() {
     } catch (err) {
       console.error(err);
     }
-  };
+  }, []);
 
+  // Initialize Keycloak SSO (PKCE S256)
   useEffect(() => {
-    loadFlights();
-    loadMyBookings();
-    // Fetch profile
-    fetch('/api/me')
-      .then(res => res.json())
-      .then(user => {
-        if (user && user.name) {
-          setCurrentUser(user);
-          setPassengerName(user.name);
-          setPassengerEmail(user.email);
+    const kc = getKeycloak();
+    let active = true;
+
+    if (!keycloakInitPromise) {
+      keycloakInitPromise = kc.init({
+        onLoad: 'login-required',
+        checkLoginIframe: false,
+        pkceMethod: 'S256',
+      });
+    }
+
+    keycloakInitPromise
+      .then((isAuth) => {
+        if (!active) return;
+        setAuthenticated(isAuth);
+        setAuthLoading(false);
+
+        if (isAuth) {
+          authFetch('/api/me')
+            .then((res) => (res.ok ? res.json() : null))
+            .then((user) => {
+              if (!active || !user) return;
+              setCurrentUser(user);
+              setPassengerName(user.name || '');
+              setPassengerEmail(user.email || '');
+            })
+            .catch(() => {});
+
+          loadFlights();
+          loadMyBookings();
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (!active) return;
+        console.error('Keycloak init failed:', err);
+        setAuthError('Could not connect to Keycloak authentication server.');
+        setAuthLoading(false);
+      });
+
+    // Periodically refresh token before expiry
+    const refreshInterval = setInterval(() => {
+      kc.updateToken(70).catch(() => {
+        console.error('Token refresh failed');
+      });
+    }, 60000);
+
+    return () => {
+      active = false;
+      clearInterval(refreshInterval);
+    };
   }, []);
 
   // Open seat selection modal
@@ -89,7 +161,7 @@ export default function App() {
     setSelectedFlight(flight);
     setSelectedSeat('');
     try {
-      const res = await fetch(`/api/flights/${flight.id}`);
+      const res = await authFetch(`/api/flights/${flight.id}`);
       if (!res.ok) throw new Error('Could not fetch flight details');
       const details = await res.json();
       setFlightDetails(details);
@@ -98,7 +170,7 @@ export default function App() {
     }
   };
 
-  // Submit booking — passes duffel_offer_id when flight came from Duffel live mode
+  // Submit booking
   const handleConfirmBooking = async (e) => {
     e.preventDefault();
     if (!selectedSeat) {
@@ -122,7 +194,7 @@ export default function App() {
         departure_time: selectedFlight.departure_time,
       };
 
-      const res = await fetch('/api/bookings', {
+      const res = await authFetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -131,16 +203,14 @@ export default function App() {
       const data = await res.json();
 
       if (res.status === 409) {
-        // Concurrency conflict / double-booking caught!
         showToast(`⚠️ Concurrency Conflict: ${data.detail}`, 'error');
-        // Refresh seat map to show updated occupied seats
         handleOpenSeatModal(selectedFlight);
         return;
       }
 
       if (!res.ok) {
         const errMsg = Array.isArray(data.detail)
-          ? data.detail.map(err => `${err.loc?.slice(-1)[0] || 'field'}: ${err.msg}`).join(', ')
+          ? data.detail.map((err) => `${err.loc?.slice(-1)[0] || 'field'}: ${err.msg}`).join(', ')
           : (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || 'Booking failed'));
         throw new Error(errMsg);
       }
@@ -158,7 +228,7 @@ export default function App() {
   const handleCancelBooking = async (bookingId) => {
     if (!confirm('Are you sure you want to cancel this reservation? Seat will be released.')) return;
     try {
-      const res = await fetch(`/api/bookings/${bookingId}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/bookings/${bookingId}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Cancellation failed');
       showToast('Booking cancelled. Seat inventory restored.', 'success');
@@ -169,18 +239,22 @@ export default function App() {
     }
   };
 
-  // Admin reset
+  // Admin reset (RBAC-protected on backend)
   const handleResetDemo = async () => {
     try {
-      const res = await fetch('/api/admin/reset', { method: 'POST' });
-      if (res.ok) {
-        showToast('Demo reset: Schedules restored to fresh state.', 'success');
-        loadFlights();
-        loadMyBookings();
-      }
+      const res = await authFetch('/api/admin/reset', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Reset failed');
+      showToast('Demo reset: Schedules restored to fresh state.', 'success');
+      loadFlights();
+      loadMyBookings();
     } catch (err) {
-      showToast('Reset failed', 'error');
+      showToast(err.message, 'error');
     }
+  };
+
+  const handleLogout = () => {
+    getKeycloak().logout({ redirectUri: window.location.origin });
   };
 
   // Format times
@@ -191,6 +265,31 @@ export default function App() {
 
   // price_sek is always normalized to SEK by the backend adapter
   const priceLabel = (flight) => `${flight.price_sek} SEK`;
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: 'white', gap: '1rem' }}>
+        <div style={{ fontSize: '2.5rem' }}>✈️</div>
+        <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>SkyReserve</div>
+        <div style={{ color: '#94a3b8', fontSize: '0.9rem' }}>Redirecting to Keycloak SSO...</div>
+      </div>
+    );
+  }
+
+  if (authError || !authenticated) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: 'white', gap: '1rem', padding: '2rem', textAlign: 'center' }}>
+        <div style={{ fontSize: '2.5rem' }}>🔐</div>
+        <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>Authentication Required</div>
+        <div style={{ color: '#94a3b8', maxWidth: 420, fontSize: '0.9rem' }}>
+          {authError || 'Please sign in with your SkyReserve Keycloak account to continue.'}
+        </div>
+        <button className="btn-primary" onClick={() => window.location.reload()}>
+          Retry Login
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -215,12 +314,21 @@ export default function App() {
             <span>📋 My Bookings ({myBookings.filter(b => b.status === 'CONFIRMED').length})</span>
           </button>
 
+          {currentUser.role === 'admin' && (
+            <button
+              style={{ background: 'transparent', border: '1px solid #475569', color: '#94a3b8', padding: '0.4rem 0.75rem', borderRadius: 6, fontSize: '0.75rem', cursor: 'pointer' }}
+              onClick={handleResetDemo}
+              title="Reset flight schedules for live demo testing (Admin only)"
+            >
+              Reset Demo
+            </button>
+          )}
+
           <button
-            style={{ background: 'transparent', border: '1px solid #475569', color: '#94a3b8', padding: '0.4rem 0.75rem', borderRadius: 6, fontSize: '0.75rem', cursor: 'pointer' }}
-            onClick={handleResetDemo}
-            title="Reset flight schedules for live demo testing"
+            style={{ background: 'transparent', border: '1px solid #475569', color: '#e2e8f0', padding: '0.4rem 0.85rem', borderRadius: 6, fontSize: '0.8rem', cursor: 'pointer' }}
+            onClick={handleLogout}
           >
-            Reset Demo
+            Logout
           </button>
         </div>
       </header>
@@ -232,7 +340,6 @@ export default function App() {
       </section>
 
       {/* Search Filter Card */}
-      {/* Hidden datalists power autocomplete suggestions on the IATA text inputs */}
       <datalist id="airport-list">
         {AIRPORTS.map(a => <option key={a.code} value={a.code}>{a.label}</option>)}
       </datalist>
@@ -291,7 +398,7 @@ export default function App() {
         ) : flights.length === 0 ? (
           <div style={{ background: 'white', padding: '3rem', textAlign: 'center', borderRadius: 12, border: '1px solid #e2e8f0' }}>
             <p style={{ fontSize: '1.1rem', fontWeight: 600, color: '#334155' }}>No flights found matching your route and date.</p>
-            <p style={{ fontSize: '0.9rem', color: '#64748b', marginTop: '0.5rem' }}>Try clearing the filters or click "Reset Demo" above to restore sample flights.</p>
+            <p style={{ fontSize: '0.9rem', color: '#64748b', marginTop: '0.5rem' }}>Enter origin and destination IATA codes (e.g. LHR → CDG) and click Search Flights.</p>
           </div>
         ) : (
           flights.map(flight => (
@@ -467,7 +574,7 @@ export default function App() {
                   <div key={b.id} className="booking-ticket" style={{ opacity: b.status === 'CANCELLED' ? 0.6 : 1 }}>
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontWeight: 800, fontSize: '1.05rem', color: '#1e3a8a' }}>Booking Reference: {b.booking_ref}</span>
+                        <span style={{ fontWeight: 800, fontSize: '1.05rem', color: '#1e3a8a' }}>{b.booking_ref}</span>
                         <span style={{
                           fontSize: '0.7rem',
                           fontWeight: 700,
@@ -480,7 +587,7 @@ export default function App() {
                         </span>
                       </div>
                       <div style={{ fontSize: '0.9rem', fontWeight: 600, marginTop: '0.25rem' }}>
-                        Flight No. {b.flight_number}: {b.origin} → {b.destination}
+                        {b.flight_number}: {b.origin} → {b.destination}
                       </div>
                       <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
                         Seat: <strong style={{ color: '#0f172a' }}>{b.seat_number}</strong> • Passenger: {b.passenger_name}

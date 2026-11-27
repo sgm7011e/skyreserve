@@ -392,6 +392,13 @@ def cancel_booking(
     if booking.status == "CANCELLED":
         return MessageResponse(message="Booking is already cancelled", status="CANCELLED")
 
+    # Owner-only or admin RBAC enforcement (matching Tutorial 12 Part 3)
+    if booking.user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: You can only cancel your own bookings",
+        )
+
     # Saga compensation: cancel at Duffel if we have an order ID
     if booking.duffel_order_id:
         ok = duffel_adapter.cancel_order(booking.duffel_order_id)
@@ -412,7 +419,16 @@ def cancel_booking(
 
 
 @app.post("/api/admin/reset", response_model=MessageResponse, tags=["Admin"])
-def reset_database(db: Session = Depends(get_db)):
-    """Reset database and re-seed flight schedules (convenient for demos)."""
+def reset_database(
+    current_user: UserProfile = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reset database and re-seed flight schedules (admin role required when auth enabled)."""
+    from app.auth import DISABLE_AUTH
+    if not DISABLE_AUTH and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Admin role required to reset demo schedules",
+        )
     seed_database(db, force=True)
     return MessageResponse(message="Database re-seeded successfully with fresh schedules", status="SUCCESS")

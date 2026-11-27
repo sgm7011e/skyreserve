@@ -20,6 +20,55 @@ services:
       timeout: 5s
       retries: 5
 
+  keycloak-db:
+    image: postgres:16-alpine
+    container_name: skyreserve-keycloak-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak_db_password
+      TZ: Europe/Stockholm
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+    networks:
+      - skyreserve-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: skyreserve-keycloak
+    restart: unless-stopped
+    command:
+      - start-dev
+      - --http-enabled=true
+      - --http-port=8080
+      - --hostname-strict=false
+      - --proxy=edge
+      - --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak_db_password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      TZ: Europe/Stockholm
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    networks:
+      - skyreserve-network
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+
   backend:
     build:
       context: ./backend
@@ -28,10 +77,14 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg2://skyreserve_user:skyreserve_pass@postgres:5432/skyreserve
-      DISABLE_AUTH: "true"
-      KEYCLOAK_REALM: "skyreserve"
+      DISABLE_AUTH: "false"
+      KEYCLOAK_URL: http://localhost:8180
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: skyreserve
+      KEYCLOAK_AUDIENCE: skyreserve-api
+      INSECURE: "true"
       TZ: Europe/Stockholm
-      DUFFEL_API_KEY: ${DUFFEL_API_KEY} # in .env, confidential info so shouldnt be here
+      DUFFEL_API_KEY: ${DUFFEL_API_KEY:-}
     ports:
       - "8000:8000"
     networks:
@@ -39,6 +92,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_started
 
   frontend:
     build:
@@ -59,3 +114,4 @@ networks:
 
 volumes:
   postgres_data:
+  keycloak_db_data:
